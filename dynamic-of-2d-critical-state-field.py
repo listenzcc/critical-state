@@ -19,6 +19,8 @@ Functions:
 # %% ---- 2024-04-24 ------------------------
 # Requirements and constants
 import cv2
+import time
+import contextlib
 import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
@@ -37,8 +39,8 @@ class Simulation:
 
 
 class BoltzmannDistribution(object):
-    k = 1e-1
-    temperature = 10
+    k = 1e0
+    temperature = 1e0
     cache = {}
 
     def clear_cache(self):
@@ -69,6 +71,26 @@ bzd = BoltzmannDistribution()
 # Function and class
 
 
+class HowFastIsIt(object):
+    times = []
+
+    @contextlib.contextmanager
+    def timeit(self):
+        try:
+            tic = time.process_time()
+            yield
+        finally:
+            t = time.process_time() - tic
+            self.times.append(t)
+
+    def report(self):
+        n = len(self.times)
+        mean = np.mean(self.times)
+        std = np.std(self.times)
+        logger.debug(
+            f'Report the time cost with {n} samples, mean={mean}, std={std}')
+
+
 class DynamicCriticalField(object):
     size = sim.size
     field = np.zeros(size)
@@ -83,30 +105,47 @@ class DynamicCriticalField(object):
         mat *= 255
         mat = mat.astype(np.uint8)
 
-        mat = cv2.resize(mat, (500, 500), interpolation=cv2.INTER_AREA)
+        # mat = cv2.resize(mat, (500, 500), interpolation=cv2.INTER_AREA)
+        mat = cv2.resize(mat, (500, 500))
 
         return mat
 
     def compute_energy(self):
         field = self.field.copy()
-        energy = field * 0
+
+        # --------------------
         random = np.random.random(field.shape)
+        # field[random < 0.001] = 1
 
-        _energy = np.zeros((self.size[0]-2, self.size[1]-2))
-        _energy += np.abs(field[1:-1, 1:-1] - field[:-2, 1:-1])
-        _energy += np.abs(field[1:-1, 1:-1] - field[2:, 1:-1])
-        _energy += np.abs(field[1:-1, 1:-1] - field[1:-1, :-2])
-        _energy += np.abs(field[1:-1, 1:-1] - field[1:-1, 2:])
-        energy[1:-1, 1:-1] = _energy
+        # --------------------
+        # Change energy change
+        a = field[1:-1, 1:-1]
+        _energy_change = a * 0
 
-        energies = [0, 1, 2, 3, 4]
+        b = field[:-2, 1:-1]
+        _energy_change += 4 * a * b + 1 - 2 * a - 2 * b
+        b = field[2:, 1:-1]
+        _energy_change += 4 * a * b + 1 - 2 * a - 2 * b
+        b = field[1:-1, :-2]
+        _energy_change += 4 * a * b + 1 - 2 * a - 2 * b
+        b = field[1:-1, 2:]
+        _energy_change += 4 * a * b + 1 - 2 * a - 2 * b
 
+        energy_change = field * 0
+        energy_change[1:-1, 1:-1] = _energy_change
+
+        # --------------------
+        # Automatically downward the energy
+        field[energy_change < 0] = 1 - field[energy_change < 0]
+
+        # --------------------
+        # Larger energy changes are changed by probability
+        energies = [1, 2, 3, 4]
         probs = np.array([bzd.prob(e) for e in energies])
-        # probs /= np.sum(probs)
 
         for i, e in enumerate(energies):
-            flip_prob = 1 - probs[i]
-            flip_map = (energy == e) & (random < flip_prob)
+            flip_prob = probs[i]
+            flip_map = (energy_change == e) & (random < flip_prob)
             field[flip_map] = 1 - field[flip_map]
 
         self.field = field
@@ -114,30 +153,12 @@ class DynamicCriticalField(object):
         return field
 
 
-class KeyManager(object):
-    key = -1
-    key_chr = ''
-
-    def update(self, key):
-        if key > -1:
-            self.key = key
-            self.key_chr = chr(key)
-
-    def peek(self):
-        return self.key_chr
-
-    def reset(self):
-        self.key = -1
-        self.key_chr = ''
-
-
 # %% ---- 2024-04-24 ------------------------
 # Play ground
 if __name__ == "__main__":
     dcf = DynamicCriticalField()
-    print(dcf.compute_energy())
 
-    km = KeyManager()
+    hfii = HowFastIsIt()
 
     # sns.heatmap(dcf.field)
     # plt.show()
@@ -147,12 +168,15 @@ if __name__ == "__main__":
 
     def loop():
         for j in range(total):
-            dcf.compute_energy()
+            with hfii.timeit():
+                dcf.compute_energy()
             cv2.setWindowTitle(
-                winname, f'{winname}: {j} | {total} | {km.key} | {km.key_chr} | {bzd.temperature} |')
-            # cv2.resizeWindow(winname, 500, 500)
+                winname, f'{winname}: {j} | {total} |  {bzd.temperature} |')
             cv2.imshow(winname, dcf.convert_to_cv2())
             cv2.waitKey(frame_gap)
+
+            if j % 100 == 0:
+                hfii.report()
 
     Thread(target=loop, daemon=True).start()
 
